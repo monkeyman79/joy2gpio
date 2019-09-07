@@ -1,0 +1,474 @@
+#! /usr/bin/env python
+
+import os, sys, getopt
+import RPi.GPIO as GPIO
+import json
+import itertools
+import select
+import struct
+from fcntl import ioctl
+import array
+import time
+from sets import Set
+import logging
+
+class Pin:
+	def __init__(self, name, index):
+		self.name = name
+		self.index = index
+		self.active = False
+		self.buttons = Set()
+
+	def setup(self):
+		GPIO.setup(self.index, GPIO.IN)
+
+	def cleanup(self):
+		GPIO.setup(self.index, GPIO.IN)
+
+	def write(self):
+		if self.active:
+			GPIO.setup(self.index, GPIO.OUT, initial = GPIO.LOW)
+		else:
+			GPIO.setup(self.index, GPIO.IN)
+	
+	def update(self, force=False):
+		active = sum(button.active for button in self.buttons) != 0
+		if active != self.active or force:
+			self.active = active
+			self.write()
+
+class Pins:
+	def __init__(self, config):
+		# Create pin objects, expand output pin names
+		self.by_index  = {}
+		for portname, pinout in [(portname, pinout)
+			for portname, pinout in config.items() if portname != "note"]:
+			self.by_index.update({index: Pin(portname + " " + pinname, index) for pinname, index in pinout.items()})
+		self.by_name = {pin.name: pin
+			for index, pin in self.by_index.items()}
+
+	def setup(self):
+		for pin in self.by_index.values():
+			pin.setup()
+
+	def cleanup(self):
+		for pin in self.by_index.values():
+			pin.cleanup()
+
+	def writeAll(self, force=True):
+		for pin in self.by_index.values():
+			pin.update(force)
+
+	def reset_mapping(self):
+		for pin in self.by_index.values():
+			pin.buttons.clear()
+
+class Button:
+	def __init__(self, name, type, index):
+		self.name = name
+		self.type = type
+		self.index = index
+		self.active = False
+		self.pins = Set()
+
+	def update(self, active):
+		if active != self.active:
+			self.active = active
+			for pin in self.pins:
+				pin.update()
+	
+	def map_single(self, pin):
+		self.pins.add(pin)
+		pin.buttons.add(self)
+
+class Controller:
+	BUTTON = 0
+	AXIS_N = 1
+	AXIS_P = 2
+
+	PROBE_FREQUENCY = 2
+
+	AXIS_CENTER = 0
+	AXIS_THRESHOLD = 4096
+	
+	JSIOCGNAME = 0x80006a13
+	JS_EVENT_BUTTON = 1
+	JS_EVENT_AXIS = 2
+	JS_EVENT_INIT = 0x80
+
+	devname_map = {}
+	fdmap = {}
+	fdlist = []
+	empty = []
+
+	quit_buttons = Set()
+
+	@staticmethod
+	def get_quit_event():
+		active = sum(button.active for button in Controller.quit_buttons) != 0
+		return active
+
+	@staticmethod
+	def update_fdmap():
+		Controller.fdmap = {ctrl.fd.fileno(): ctrl for ctrl in Controller.devname_map.values()}
+		Controller.fdlist = [ctrl.fd for ctrl in Controller.devname_map.values()]
+			
+	@staticmethod
+	def probe_joysticks():
+		configs = Controller.controller_cfg
+		Controller.probe_time = time.time()
+		changed = False
+		if len(Controller.device_list) != 0:
+			devnames = [devname for devname in Controller.device_list if os.path.exists(devname)]
+		else:
+			devnames = ["/dev/input/"+devname for devname in os.listdir('/dev/input') if devname.startswith('js')]
+		prev_devnames = Controller.devname_map.keys()
+		# Check if any joystick device has been removed or invalidated
+		for devname in prev_devnames:
+			reopen = False
+			if devname not in devnames:
+				logging.info("Device '%s' removed", devname)
+				reopen = True
+			else:
+				try:
+					ctrl = Controller.devname_map[devname]
+					model = ctrl.get_model()
+					if model != ctrl.model:
+						# Unlikely - we will rather get exception from get_model
+						logging.info("%s: Model name changed - reinitializing", ctrl.shortname)
+						reopen = True
+				except:
+					logging.info("%s: Error reading model name - reinitializing", ctrl.shortname)
+					reopen = True
+			if reopen:
+				Controller.devname_map[devname].close()
+				del Controller.devname_map[devname]
+				changed = True
+		# Check if any joystick device has been added
+		prev_devnames = Controller.devname_map.keys()
+		for devname in devnames:
+			if devname not in prev_devnames:
+				logging.info("New device '%s'", devname)
+				new_controller = Controller(devname)
+				new_controller.mapping_name = Controller.mapping_name
+				try:
+					new_controller.open()
+					# Get joystick model name
+					model = new_controller.get_model()
+					new_controller.model = model
+					logging.info("%s: Model '%s'", new_controller.shortname, new_controller.model)
+					conf = None
+					# If there is matching controller configuration - use it,
+					# otherwise use default configuration (if any)
+					if model in configs:
+						conf = configs[model]
+					elif "default" in configs:
+						conf = configs["default"]
+						logging.info("%s: Using default controller configuration", new_controller.shortname)
+					if conf is not None:
+						logging.info("%s: Using controller configuration '%s'", new_controller.shortname, conf["name"])
+						new_controller.setup(conf)
+					else:
+						logging.info("%s: No controller layout found for model '%s'", new_controller.shortname, model)
+					Controller.devname_map[devname] = new_controller
+				except IOError, e:
+					# Joystick device might have disappeared. Not a problem.
+					logging.info("%s: %s", str(e))
+					logging.info("%s: Failed to open or initialize joystick device", new_controller.shortname)
+					new_controller.close()
+				changed = True
+		# Update files for select.select
+		if changed:
+			Controller.update_fdmap()
+		return changed
+
+	@staticmethod
+	def poll():
+		forceProbe = False
+		# Check if there is any data on any joystick
+		if len(Controller.fdlist) != 0:
+			readable, _, _ = select.select(Controller.fdlist, Controller.empty, Controller.empty, 1)
+		else:
+			time.sleep(1)
+			readable = Controller.empty
+		changed = False
+		# Process joystick data
+		for f in readable:
+			ctrl = Controller.fdmap[f.fileno()]
+			try:
+				ctrl.read()
+			except IOError:
+				forceProbe = True
+			if ctrl.get_swap_event():
+				ctrl.mapping = [(entry[0], swap_portname(entry[1])) for entry in ctrl.mapping]
+				ctrl.port_swapped = not ctrl.port_swapped
+				logging.info("%s: Swapping ports", ctrl.shortname)
+				changed = True # Rebuild mapping
+		# Periodically check for new or removed joystick devices
+		if forceProbe or time.time() - Controller.probe_time >= Controller.PROBE_FREQUENCY:
+			if Controller.probe_joysticks():
+				changed = True
+		if changed:
+			Controller.apply_mappings()
+			Controller.pins.writeAll(False)				
+
+	def __init__(self, devname):
+		self.devname = devname
+		self.shortname = os.path.basename(devname)
+		self.model = ""
+		self.mapping_name = ""
+		self.selected_mapping = ""
+		self.fd = None
+		self.swap_buttons = Set()
+		self.swap_active = False
+		self.port_swapped = False
+
+	def open(self):
+		self.fd = open(self.devname, 'rb', 0)
+		return self.fd
+
+	def setup(self, config):
+		# Create buttons and axes
+		self.buttons = {int(index): Button(name, Controller.BUTTON, index)
+			for index, name in config["buttons"].items()}
+		self.axis_n = {int(index[:-1]): Button(name, Controller.AXIS_N, index)
+			for index, name in config["axes"].items() if index[-1] == "-"}
+		self.axis_p = {int(index[:-1]): Button(name, Controller.AXIS_P, index)
+			for index, name in config["axes"].items() if index[-1] == "+"}
+		# Index buttons and axes by name
+		self.by_name = {button.name: button
+			for index, button in itertools.chain(self.buttons.items(), self.axis_n.items(), self.axis_p.items()) }
+
+	def close(self):
+		if self.fd is not None:
+			self.fd.close()
+		self.fd = None
+
+	def get_model(self):
+		buf = array.array('c', ['\0'] * 64)
+		ioctl(self.fd, Controller.JSIOCGNAME + (0x10000 * len(buf)), buf)
+		return buf.tostring().rstrip('\x00')
+
+	def get_swap_event(self):
+		active = sum(button.active for button in self.swap_buttons) != 0
+		result = active and not self.swap_active
+		self.swap_active = active
+		return result
+
+	def read(self):
+		# Read and unpack event from joystick device
+		evbuf = self.fd.read(8)
+		time, value, type, number = struct.unpack('IhBB', evbuf)
+		# Ignore bit 7 - it indicates that this is initial state after opening joystick device
+		type = type & ~Controller.JS_EVENT_INIT
+		if type == Controller.JS_EVENT_BUTTON and number in self.buttons:
+			self.buttons[number].update(value != 0)
+		elif type == Controller.JS_EVENT_AXIS:
+			axis_n_state = (value < Controller.AXIS_CENTER - Controller.AXIS_THRESHOLD)
+			axis_p_state = (value > Controller.AXIS_CENTER + Controller.AXIS_THRESHOLD)
+			if number in self.axis_n:
+				self.axis_n[number].update(axis_n_state)
+			if number in self.axis_p:
+				self.axis_p[number].update(axis_p_state)
+
+	def select_mapping(self, configs, index, count):
+		if self.mapping_name != "" and self.mapping_name != "auto" and self.mapping_name in configs:
+			return configs[self.mapping_name]
+		for mapping in [mapping for mapping in configs.values() if "autoselect" in mapping]:
+			autoselect = mapping["autoselect"]
+			if not isinstance(autoselect, list):
+				autoselect = [autoselect]
+			# Try each autoselect set for match
+			for conds in autoselect:
+				match = True
+				for key, value in conds.items():
+					if key == "joystick count":
+						if int(value) != count:
+							match = False
+					elif key == "joystick index":
+						if int(value) != index:
+							match = False
+					elif key == "device":
+						if value != self.devname:
+							match = False
+					elif key == "model":
+						if value != self.model:
+							match = False
+					else:
+						match = False
+					if not match:
+						break
+				if match:
+					return mapping
+		# No match
+		for mapping in [mapping for mapping in configs.values() if "default" in mapping]:
+			if mapping["default"] == True:
+				return mapping
+		return { "name": "Empty mapping", "mapping": [] }
+		
+	def apply_mapping(self, pins, mapping):
+		self.swap_buttons = Set()
+		for button in self.by_name.values():
+			button.pins.clear()
+		if self.selected_mapping != mapping["name"]:
+			logging.info("%s: Using joystick mapping '%s'", self.shortname, mapping["name"])
+			self.selected_mapping = mapping["name"]
+			self.mapping = [(entry[0], entry[1]) for entry in mapping["mapping"]]
+			self.port_swapped = False
+		else:
+			pass # Keep old mapping
+		config = self.mapping
+		for entry in config:
+			axis_name, pin_name = tuple(entry)
+			if axis_name[-1] == '*':
+				stem = axis_name[:-1]
+				for map_axis in self.by_name:
+					if map_axis.startswith(stem):
+						map_pin = pin_name + map_axis[len(stem):]
+						if not map_pin in pins.by_name:
+							logging.error("%s: Output axis or button name '%s' not found", self.shortname, map_pin)
+						else:
+							self.by_name[map_axis].map_single(pins.by_name[map_pin])
+							logging.debug("%s: Mapping '%s' => '%s'", self.shortname, map_axis, map_pin);
+			elif not axis_name in self.by_name:
+				logging.error("%s: Input axis or button name '%s' not found", self.shortname, axis_name)
+			elif pin_name == 'swap':
+				self.swap_buttons.add(self.by_name[axis_name])
+				logging.debug("%s: Mapping '%s' => <swap>", self.shortname, axis_name);
+			elif pin_name == 'quit':
+				Controller.quit_buttons.add(self.by_name[axis_name])
+				logging.debug("%s: Mapping '%s' => <quit>", self.shortname, axis_name);
+			elif not pin_name in pins.by_name:
+				logging.error("%s: Output axis or button name '%s' not found", self.shortname, pin_name)
+			else:
+				self.by_name[axis_name].map_single(pins.by_name[pin_name])
+				logging.debug("%s: Mapping '%s' => '%s'", self.shortname, axis_name, pin_name);
+
+	@staticmethod
+	def reset_mapping():
+		Controller.quit_buttons = Set()
+
+	@staticmethod
+	def apply_mappings():
+		Controller.reset_mapping()
+		Controller.pins.reset_mapping()
+		index = 0
+		count = len(Controller.devname_map)
+		for ctrl in Controller.devname_map.values():
+			mapping = ctrl.select_mapping(Controller.mapping_cfg, index, count)
+			ctrl.apply_mapping(Controller.pins, mapping)
+			index = index + 1
+
+	@staticmethod
+	def cleanup():
+		for ctrl in Controller.devname_map.values():
+			ctrl.close()
+		Controller.devname_map = {}
+		
+def swap_portname(pin_name):
+	if pin_name.startswith("port 1 "):
+		return "port 2 " + pin_name[7:]
+	if pin_name.startswith("port 2 "):
+		return "port 1 " + pin_name[7:]
+	return pin_name
+
+def preprocess_controller_cfg(conf):
+	if "include" in conf:
+		includes = conf["include"]
+		del conf["include"]
+		if not isinstance(includes, list):
+			includes = [includes]
+		for include in includes:
+			inc_cfg = controller_cfg[include]
+			preprocess_controller_cfg(inc_cfg)
+			conf["buttons"].update(inc_cfg["buttons"])
+			conf["axes"].update(inc_cfg["axes"])
+			
+mapping_name = ""
+device_list = []
+loglevel = "INFO"
+
+try:
+	opts, args = getopt.getopt(sys.argv[1:],"m:d:l:",["mapping=", "device=", "loglevel="])
+except getopt.GetoptError:
+	print('joy2gpio -m <mapping> -d <device> -l <loglevel>')
+	sys.exit(2)
+
+for opt, arg in opts:
+	if opt in ("-m", "--mapping"):
+		mapping_name = arg
+	elif opt in ("-d", "--device"):
+		device_list.append(arg)
+	elif opt in ("-l", "--loglevel"):
+		loglevel = arg
+
+logging.basicConfig(level=loglevel, format='%(pathname)s: %(levelname)s: %(message)s')
+
+# Load pinout
+with open('pinout.json', 'r') as infile:
+	pinout_cfg = json.load(infile)
+
+# Load controller layout configuration file
+with open('controller.json', 'r') as infile:
+	controller_cfg = json.load(infile)
+# Select default layout
+default_cfg = None
+if "default" in controller_cfg:
+	default_cfg = controller_cfg["default"]
+for name, ctrl in controller_cfg.items():
+	ctrl["name"] = name
+	if "buttons" not in ctrl:
+		ctrl["buttons"] = {}
+	if "axes" not in ctrl:
+		ctrl["axes"] = {}
+	if default_cfg is None and "default" in ctrl and ctrl["default"] == True:
+		default_cfg = ctrl
+# Otherwise pick first one
+if default_cfg is None and len(controller_cfg) != 0:
+	default_cfg = controller_cfg[next(iter(controller_cfg))]
+if not "default" in controller_cfg:
+	controller_cfg["default"] = default_cfg
+# Preprocess configuration
+for conf in controller_cfg.values():
+	preprocess_controller_cfg(conf)
+# Load mapping
+with open('mapping.json', 'r') as infile:
+	mapping_cfg = json.load(infile)
+common_mapping = None
+for name, mapping in mapping_cfg.items():
+	mapping["name"] = name
+	if "common" in mapping and mapping["common"]:
+		common_mapping = mapping
+if common_mapping is not None:
+	for mapping in mapping_cfg.values():
+		mapping["mapping"].extend(common_mapping["mapping"])
+
+Controller.mapping_cfg = mapping_cfg
+Controller.controller_cfg = controller_cfg
+Controller.mapping_name = mapping_name
+Controller.device_list = device_list
+
+GPIO.setmode(GPIO.BOARD)
+
+Controller.pins = Pins(pinout_cfg)
+try:
+	Controller.pins.setup()
+	Controller.pins.writeAll()
+
+	Controller.probe_joysticks()
+	Controller.apply_mappings()
+
+	while not Controller.get_quit_event():
+		Controller.poll()
+
+except KeyboardInterrupt:
+	print("Bye")
+
+except:
+	Controller.pins.cleanup()
+	GPIO.cleanup()
+	raise
+
+Controller.pins.cleanup()
+GPIO.cleanup()
+Controller.cleanup()

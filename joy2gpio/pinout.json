@@ -1,0 +1,17 @@
+{
+    "note": "GPIO Pin numbers are using BOARD scheme (P1 header pin numbers)",
+	"port 1": {
+		"up": 3,
+		"down": 5,
+		"left": 7,
+		"right": 8,
+		"fire": 10
+	},
+	"port 2" : {
+		"up": 11,
+		"down": 13,
+		"left": 15,
+		"right": 16,
+		"fire": 18
+	}
+}

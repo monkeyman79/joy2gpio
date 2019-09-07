@@ -1,0 +1,8 @@
+* readme.md
+* button as modifier ('shift')
+* 'latch on', 'latch off', 'toggle'
+* 'autofire'
+* execute system command
+* config file paths from cmdline
+* controller class in mapping
+* output pins configuration

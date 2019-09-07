@@ -1,0 +1,71 @@
+{
+	"Microsoft X-Box 360 pad": {
+		"default": true,
+		"buttons": {
+			"0": "a",
+			"1": "b",
+			"2": "x",
+			"3": "y",
+			"4": "left shoulder",
+			"5": "right shoulder",
+			"6": "select",
+			"7": "start",
+			"8": "home",
+			"9": "left thumbstick",
+			"10": "right thumbstick"
+		},
+		"axes": {
+			"0-": "left analog left",
+			"0+": "left analog right",
+			"1-": "left analog up",
+			"1+": "left analog down",
+			"2+": "left trigger",
+			"3-": "right analog left",
+			"3+": "right analog right",
+			"4-": "right analog up",
+			"4+": "right analog down",
+			"5+": "right trigger",
+			"6-": "hat left",
+			"6+": "hat right",
+			"7-": "hat up",
+			"7+": "hat down"
+		}
+	},
+	"Common gamepad layout": {
+		"buttons": {
+			"0": "y",
+			"1": "b",
+			"2": "a",
+			"3": "x",
+			"4": "left shoulder",
+			"5": "right shoulder",
+			"6": "left trigger",
+			"7": "right trigger",
+			"8": "select",
+			"9": "start",
+			"10": "left thumbstick",
+			"11": "right thumbstick",
+			"12": "home"
+		},
+		"axes": {
+			"0-": "left analog left",
+			"0+": "left analog right",
+			"1-": "left analog up",
+			"1+": "left analog down",
+			"2-": "right analog left",
+			"2+": "right analog right",
+			"3-": "right analog up",
+			"3+": "right analog down",
+			"4-": "hat left",
+			"4+": "hat right",
+			"5-": "hat up",
+			"5+": "hat down"
+		}
+	},
+	"ShanWan Trust Gamepad": {
+		"include": "Common gamepad layout"
+	},
+	"SPEEDLINK TORID": {
+		"include": "Common gamepad layout"
+	}
+}

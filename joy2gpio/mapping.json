@@ -1,0 +1,78 @@
+{
+	"Common": {
+		"common": true,
+		"mapping": [
+			[ "select", "swap" ]
+		]
+	},
+	"Single pad": {
+		"default": true,
+		"mapping": [
+			[ "left analog *", "port 1 " ],
+			[ "a", "port 1 fire" ],
+			[ "b", "port 2 fire" ],
+			[ "right analog *", "port 2 " ],
+			[ "left thumbstick", "port 1 fire" ],
+			[ "right thumbstick", "port 2 fire" ],
+			[ "hat *", "port 2 " ],
+			[ "left trigger", "port 1 fire" ],
+			[ "right trigger", "port 2 fire" ]
+		]
+	},
+	"Port 2": {
+		"autoselect": {
+			"joystick count": 2,
+			"joystick index": 0
+		},
+		"mapping": [
+			[ "left analog *", "port 2 " ],
+			[ "a", "port 2 fire" ],
+			[ "b", "port 2 fire" ],
+			[ "right analog *", "port 2 " ],
+			[ "left thumbstick", "port 2 fire" ],
+			[ "right thumbstick", "port 2 fire" ],
+			[ "hat *", "port 2 " ],
+			[ "left trigger", "port 2 fire" ],
+			[ "right trigger", "port 2 fire" ]
+		]
+	},
+	"Port 1": {
+		"autoselect": {
+			"joystick count": 2,
+			"joystick index": 1
+		},
+		"mapping": [
+			[ "left analog *", "port 1 " ],
+			[ "a", "port 1 fire" ],
+			[ "b", "port 1 fire" ],
+			[ "right analog *", "port 1 " ],
+			[ "left thumbstick", "port 1 fire" ],
+			[ "right thumbstick", "port 1 fire" ],
+			[ "hat *", "port 1 " ],
+			[ "left trigger", "port 1 fire" ],
+			[ "right trigger", "port 1 fire" ]
+		]
+	},
+	"Both ports": {
+		"mapping": [
+			[ "left analog *", "port 1 " ],
+			[ "left analog *", "port 2 " ],
+			[ "a", "port 1 fire" ],
+			[ "a", "port 2 fire" ],
+			[ "b", "port 1 fire" ],
+			[ "b", "port 2 fire" ],
+			[ "right analog *", "port 1 " ],
+			[ "right analog *", "port 2 " ],
+			[ "left thumbstick", "port 1 fire" ],
+			[ "left thumbstick", "port 2 fire" ],
+			[ "right thumbstick", "port 1 fire" ],
+			[ "right thumbstick", "port 2 fire" ],
+			[ "hat *", "port 1 " ],
+			[ "hat *", "port 2 " ],
+			[ "left trigger", "port 1 fire" ],
+			[ "left trigger", "port 2 fire" ],
+			[ "right trigger", "port 1 fire" ],
+			[ "right trigger", "port 2 fire" ]
+		]
+	}
+}
